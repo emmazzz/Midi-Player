@@ -1,0 +1,118 @@
+# gnuplot.srp -- an interface to gnuplot
+
+# p = Gnuplot(filename) -- open a plot
+#   keyword parameters are:
+#     driver (output format, e.g. "png", defaults to display on Mac)
+#            note: "png size 320,240" will set the image size.
+#     font (font specification, e.g. 10 or "Verdana,10")
+#     output (filename for output)
+#     xlabel (label for x axis)
+#     ylabel (label for y axis)
+#     xrange (min/max x axis values, a 2-element array [min, max]
+#             default is nil which means use gnuplot's default range)
+#     yrange (min/max y axis values, a 2-element array [min, max]
+#             default is nil which means use gnuplot's default range)
+#     title (title to print above the plot)
+# p.newcurve() -- begin a curve
+#   optional parameter is:
+#     title (default is none, can be a string to label the curve)
+#   keyword parameters are:
+#     style (default is "lines", can also be "points" or "linespoints", "bars")
+#     color (type "show colornames" to gnuplot for a list of options)
+# p.point(x, y) -- plot a point or
+#                  for "bar" style, use p.point(label_string, height)
+# p.endcurve() -- end a curve
+# p.endplot() -- end and close file
+
+class Gnuplot:
+    var outf // filename
+    var curve
+    var data
+    var driver # set term <driver>
+    var font
+    var output
+    var xlabel, ylabel, title
+    var command
+    var sep
+    var is_bar_chart
+    var is_line_chart
+
+    def init(filename, keyword driver = "aqua", output, xlabel, ylabel, title,
+             xrange, yrange, font)
+        outf = open(filename, "w")
+        data = []
+        command = "plot"
+        sep = ""
+        this.driver = driver
+        this.output = output
+        this.xlabel = xlabel
+        this.ylabel = ylabel
+        this.title = title
+        this.font = font
+
+        if xrange
+            command = command + " [" + str(xrange[0]) + ":" +
+                                str(xrange[1]) + "]"
+        if yrange
+            if not xrange
+                command = command + " []"
+            command = command + " [" + str(yrange[0]) + ":" +
+                                str(yrange[1]) + "]"
+        
+
+    def newcurve(optional title = "", keyword color = nil, style = "lines")
+        curve = []
+        data.append(curve)
+        if style == "bars":
+            command = command + sep + " '-' using 1:3:xtic(2) with boxes" +
+                      " title \"" + title + "\""
+            if is_line_chart:
+                print "gnuplot.srp: Error - must be either bar chart or not"
+            is_bar_chart = true
+        else:
+            command = command + sep + " '-' w " + style +
+                      " title \"" + title + "\""
+            if is_bar_chart:
+                print "gnuplot.srp: Error - must be either bar chart or not"
+            is_line_chart = true
+        if color
+            command = command + " lc rgbcolor \"" + color + "\""
+        sep = ","
+
+    def point(x, y)
+        curve.append([x, y])
+
+    def endcurve()
+        nil        
+
+    def endplot()
+        var save_stdout = stdout
+        stdout = outf
+        print "set term", driver;
+        if font:
+            if type(font) == 'String':
+                print "font '" + font + "'"
+            else:
+                print "font '," + str(font) + "'"
+        else:
+            print
+        print "set boxwidth 0.5"
+        print "set style fill solid"
+        if output
+            print "set output", repr(output)
+        if xlabel
+            print "set xlabel", repr(xlabel)
+        if output
+            print "set ylabel", repr(ylabel)
+        if title
+            print "set title", repr(title)
+        print command
+        for curve in data
+            for pair at i in curve
+                // use repr() to get quotes on bar labels
+                if is_bar_chart: print i,
+                print repr(pair[0]), pair[1]
+            print "e"
+        stdout = save_stdout
+        outf.close()
+

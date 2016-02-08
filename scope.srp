@@ -1,0 +1,441 @@
+# scope.srp -- implements oscilloscope-like graph output
+
+# Design:
+#
+#    Doubles are plotted as a function of integer time.
+#    Time is advanced one pixel by calling tick()
+#    There are multiple channels available
+#
+#    init(parent, x, y, w, h) -- create the panel
+#
+#    tick() -- advance time by one unit
+#
+#    set_channels(n) -- set number of channels
+#
+#    set_value(chan, value) -- change value on a channel
+#
+#    background_color -- color for background
+#
+#    y_min, y_max, t_max -- minimum and maximum values
+#
+#    phase -- location of horizontal sweep (integer)
+#
+#    What to draw: draw a line from point to point. Draw
+#    when time "ticks", at which point the last value will
+#    be at phase-1, so draw line from phase-2 to phase-1, and
+#    draw the vertical "now" line at phase. phase goes
+#    from 0 to width-1, so don't draw a line when phase==1.
+#    When phase==0, the previous phase is width-1, and the
+#    line goes from width-2 to width-1.
+#
+# Standard application:
+#    
+#    initially, set_channels(n) to the number of channels
+#    every time unit, call tick()
+#    asynchronously or whatever, call set_value(chan, value)
+#        this need only be called when a value actually changes
+#        e.g. when a slider moves or midi data arrives. The
+#        value "sticks" until changed.
+#
+# Audio signal scope application:
+#
+#    Assumes that data arrives as arrays and entire display
+#    is redrawn rather than drawing as time progresses.
+#
+#    initially, set_channels(n) to the number of channels
+#    call set_values(chan, values) for each channel, where
+#        values is an array of floats
+#    the length of each values array should be scope.t_max, the
+#        number of horizontal points, but the code will handle
+#        shorter and longer arrays.
+
+require "precision.srp"
+
+scope_color_map = ["BLUE", "RED", "GREEN", "YELLOW"]
+
+class Scope_screen (Canvas):
+    var values // array of arrays of function values
+    var current // input to scope: one value per channel
+    var phase // where is the cursor? an integer pixel number
+    var channels // how many functions to plot
+    var y_min // function value at bottom of screen
+    var y_max // function value at top of screen
+    var t_max // number of pixels (time units)
+    var height // height of screen in pixels
+    var background_color // screen color
+    var draw_phase // value of phase at last redraw
+    var grid // array of grid locations (pixels)
+    var grid_zero // which grid index is origin
+    var threshold // display this trigger level if non-nil
+    var direction // +1 or -1: the threshold crossing direction
+    var scope // screen's parent, used for update
+
+    def init(parent, x, y, w, h, s)
+        t_max = w
+        height = h
+        y_min = -1.0
+        y_max = 1.0
+        scope = s
+        set_grid()
+        super.init(parent, x, y, w, h)
+        values = []
+        set_channels(1)
+        phase = 0
+        draw_phase = w - 1 # phase at last redraw
+        channels = 1
+        background_color = "LIGHT BLUE"
+        set_color(background_color)
+        refresh(true)
+
+    def set_size(w, h)
+        t_max = w
+        height = h
+        super.set_size(w, h)
+        set_grid()
+        refresh(true)
+
+    def set_channels(n):
+        var new_values = array(n)
+        for i = 0 to n:
+            if i < len(values):
+                new_values[i] = values[i]
+            else: // create new arrays as needed
+                new_values[i] = array(t_max)
+                for j = 0 to t_max:
+                    new_values[i][j] = 0
+        current = array(n)
+        for i = 0 to n
+            current[i] = 0
+        values = new_values
+        channels = n
+
+    def set_threshold(threshold_, direction_):
+        threshold = threshold_
+        direction = direction_
+        if direction == 0:
+            threshold = nil
+        refresh(true)
+
+    def set_grid():
+        # compute the grid locations
+        // grid locations are 1, .5, .25, or .125 times some power of 10
+        // find a scale that divides the range into 5 or less intervals
+        var range = y_max - y_min
+        var interval = range * 0.2
+        var log_interval = log10(interval)
+        var y = 10 ** int(log_interval)
+        if log_interval < 0: // negatives round up, so fix rounding here
+            y = y * 0.1
+        // now y is smaller than the desired interval
+        // search for better interval size
+        if y * 2 < interval:
+            if y * 5 < interval:
+                y = y * 5
+            else:
+                y = y * 2
+        interval = y
+        grid = []
+        y = int(y_min / interval)
+        if y_min > 0:
+            y = y + 1 // start greater than y
+        var y_last = y_max / interval
+        if y_max < 0:
+            y_last = y_last - 1 // finish below y_last
+        grid_zero = nil
+        while y < y_last:
+            grid.append(map_y(y * interval))
+            if y == 0:
+                grid_zero = len(grid) - 1
+            y = y + 1
+        scope.new_grid(y_min, y_max)
+
+    def draw_grid():
+        # draw full grid
+        set_pen_color("LIME GREEN")
+        for y in grid:
+            draw_line(0, y, t_max + 1, y)
+        // make origin black
+        if grid_zero:
+            set_pen_color("BLACK")
+            y = grid[grid_zero]
+            draw_line(0, y, t_max + 1, y)
+        // mark the threshold for triggering a sweep:
+        if threshold:
+            set_pen_color("RED")
+            y = map_y(threshold)
+            draw_line(0, y, 20, y)
+            // draw the arrow
+            draw_line(10, y, 10, y + direction * 10)
+            draw_line(10, y, 13, y + direction * 6)
+            draw_line(10, y,  7, y + direction * 6)
+
+    def draw_grid_incr(x):
+        # draw grid points at draw_phase only
+        set_pen_color("LIME GREEN")
+        for y in grid:
+            draw_point(x, y)
+        // make origin black
+        if grid_zero:
+            set_pen_color("BLACK")
+            draw_point(x, grid[grid_zero])
+
+    def zoom_out(rest r):
+        # change vertical scale
+        y_min = precision(y_min * 2, 2)
+        y_max = precision(y_max * 2, 2)
+        set_grid()
+        refresh(false)
+
+    def zoom_in(rest r):
+        # change vertical scale
+        y_min = precision(y_min * 0.5, 2)
+        y_max = precision(y_max * 0.5, 2)
+        set_grid()
+        refresh(false)
+
+    def auto_range(rest r)
+        # compute new range based on current data
+        var maximum = 0
+        var minimum = 0
+        for c in values:
+            for v in c:
+                maximum = max(maximum, v)
+                minimum = min(minimum, v)
+        y_min = minimum * 1.1
+        y_max = maximum * 1.1
+        if y_max - y_min < 0.000001:
+            y_max = y_min + 1.0 // guard against zero range
+        y_min = precision(y_min, 2)
+        y_max = precision(y_max, 2)
+        set_grid()
+        refresh(false)
+
+
+    def set_value(chan, value):
+        # set_value enters a new current value for a channel
+        # print "value", value
+        current[chan] = value
+
+    def set_values(chan, values_):
+        # set_values sets an array of values for a channel
+        values[chan] = values_
+        refresh(true)
+
+    def tick():
+        # tick advances "time" on scope by one pixel
+        for i = 0 to channels:
+            values[i][phase] = current[i]
+            # print "tick", current[i]
+        phase = phase + 1
+        if phase >= get_width():
+            phase = 0
+        refresh(false)
+
+    def map_y(y):
+        # convert from y real value to y screen coordinate
+        var rslt = round(height * (y_max - y) / (y_max - y_min), 0)
+        # print rslt, height, y_max, y_min, y
+        rslt
+
+    def unmap_y(y):
+        # convert from y screen coordinate to y real value
+        y_max - (y / height) * (y_max - y_min)
+
+    def paint(full_redraw):
+        if full_redraw
+            clear(background_color)
+            draw_grid()
+            for c = 0 to len(values):
+                # set pen to channel's color
+                set_pen_color(scope_color_map[c % len(scope_color_map)])
+                from = map_y(values[c][0])
+                var stop = min(len(values[c]), t_max)
+                for i = 1 to stop:
+                    to = map_y(values[c][i])
+                    if i != phase:
+                        draw_line(i - 1, from, i, to)
+                    from = to
+        else:
+            set_pen_color(background_color)
+            // erase old vertical cursor
+            draw_line(draw_phase, 0, draw_phase, get_height())
+            // compute x0, the previous location of draw_phase
+            var x0 = draw_phase - 1
+            if x0 < 0:
+                x0 = len(values[0]) - 1
+            // draw grid line pixels at x0
+            draw_grid_incr(x0)
+            for c = 0 to channels:
+                var x = x0
+                # set pen to channel's color
+                set_pen_color(scope_color_map[c % len(scope_color_map)])
+                var from = map_y(values[c][x])
+                x = draw_phase
+                var to
+                # if set_values installed a full array, make sure the
+                # length matches t_max; if not, adjust it
+                if len(values[c]) != t_max:
+                    while len(values[c]) < t_max:
+                        values[c].append[0.0]
+                    values[c].set_len(t_max)
+                while x != phase:
+                    to = map_y(values[c][x])
+                    if x != 0:
+                        draw_line(x - 1, from, x, to)
+                    x = x + 1
+                    if x == len(values[c]):
+                        x = 0
+                    from = to
+        set_pen_color("black")
+        draw_line(phase, 0, phase, get_height())
+        draw_phase = phase
+
+
+    def handle(event, x, y):
+        if wxs_event_names.has_key(event):
+            // report mouse event
+            if scope.target:
+                scope.target.mouse_event(event, x, unmap_y(y))
+
+            
+
+SCOPE_BUTTON_WIDTH = 30
+SCOPE_BUTTON_HEIGHT = 20
+
+class Scope (Panel):
+    var screen
+    var zoom_in_y
+    var zoom_out_y
+    var auto_range
+    var max_label
+    var min_label
+    var scope_label
+    var control_color
+    var sample_rate // if non-nil, generates horizontal labels, etc.
+    var zoom_in_x
+    var zoom_out_x
+    var duration_label
+
+    def init(parent, label, x, y, w, h, optional sample_rate_):
+        sample_rate = sample_rate_
+        control_color = "KHAKI"
+        var bh = SCOPE_BUTTON_HEIGHT
+        var bw = SCOPE_BUTTON_WIDTH
+        super.init(parent, x, y, w, h)
+        if sample_rate: // pretend like panel is shorter, leave room at bottom
+            h = h - bh
+        var bv = int((h - 2 * bh) / 2) // button vertical: top of zoom_in
+        scope_label = Statictext(id, label, bw, 0, w, bh)
+        max_label = Statictext(id, "1", 0, bh - 5, bw, bh)
+        max_label.set_color(control_color)
+        min_label = Statictext(id, "-1", 0, h - bh, bw, bh)
+        min_label.set_color(control_color)
+        scope_label.set_color(control_color)
+        phase = 0
+        screen = Scope_screen(id, bw, bh, w - bw - 5, h - bh - 5, this)
+        values = array(1)
+        zoom_in_y = Button(id, "+", 0, bv, bw, bh)
+        zoom_in_y.target = screen
+        zoom_in_y.method = 'zoom_in'
+        zoom_out_y = Button(id, "-", 0, bv + bh * 2, bw, bh)
+        zoom_out_y.target = screen
+        zoom_out_y.method = 'zoom_out'
+        auto_range = Button(id, "A", 0, bv + bh, bw, bh)
+        auto_range.target = screen
+        auto_range.method = 'auto_range'
+        if sample_rate:
+            // remember that h is shortened by bh
+            duration_label = Statictext(id, str(screen.t_max / sample_rate), 
+                                        w - bw * 2, h, bw * 2, bh)
+            duration_label.set_color(control_color)
+            var zoom_center = round(bw + (w - bw - 5) / 2, 0)
+            if zoom_center + bw * 3 > w: // shift buttons left to make room
+                zoom_center = max(bw, w - 3 * bw)
+            zoom_out_x = Button(id, "-", zoom_center - bw, h, bw, bh)
+            zoom_out_x.target = this
+            zoom_out_x.method = 'zoom_out_x'
+            zoom_in_x = Button(id, "+", zoom_center, h, bw, bh)
+            zoom_in_x.target = this
+            zoom_in_x.method = 'zoom_in_x'
+        set_color(control_color)
+
+    def set_sample_rate(r):
+        sample_rate = r
+        duration_label.set_string(str(screen.t_max / sample_rate))
+
+    def set_size(w, h)
+        var bh = SCOPE_BUTTON_HEIGHT
+        var bw = SCOPE_BUTTON_WIDTH
+        super.set_size(w, h)
+        if sample_rate: // pretend like panel is shorter, leave room at bottom
+            h = h - bh
+        var bv = int((h - 2 * bh) / 2) // button vertical: top of zoom_in
+        zoom_in_y.set_position(0, bv)
+        zoom_out_y.set_position(0, bv + bh * 2)
+        auto_range.set_position(0, bv + bh)
+        min_label.set_position(0, h - bh)
+        if sample_rate:
+            duration_label.set_position(w - bw * 2, h)
+            set_sample_rate(sample_rate)
+            // remember that h is shortened by bh
+            var zoom_center = round(bw + (w - bw - 5) / 2, 0)
+            if zoom_center + bw * 3 > w: // shift buttons left to make room
+                zoom_center = max(bw, w - 3 * bw)
+            zoom_out_x.set_position(zoom_center - bw, h)
+            zoom_in_x.set_position(zoom_center, h)
+        screen.set_size(w - bw - 5, h - bh - 5)
+
+    def set_channels(n):
+        screen.set_channels(n)
+
+    def set_threshold(threshold, direction):
+        screen.set_threshold(threshold, direction)
+
+    def tick():
+        screen.tick()
+
+    def set_value(chan, value):
+        screen.set_value(chan, value)
+
+    def set_values(chan, values):
+        screen.set_values(chan, values)
+
+    def new_grid(y_min, y_max)
+        # fix labels when y axis is rescaled
+        max_label.set_string(repr(y_max))
+        min_label.set_string(repr(y_min))
+
+    def zoom_in_x(rest r):
+        if target:
+            target.zoom_in_x()
+
+    def zoom_out_x(rest r):
+        if target:
+            target.zoom_out_x()
+        
+
+
+
+#######################################################################
+## TEST ROUTINES
+#######################################################################
+
+def scope_test():
+    scope = Scope(default_window.id, "scope", 0, 100, 100, 100)
+    scope_go = Button(default_window.id, "go", 120, 100, 40, 20)
+    scope_paint = Button(default_window.id, "paint", 120, 130, 40, 20)
+
+    scope_go.method = 'scope_kick'
+    #scope_paint.method = 'scope_paint'
+
+
+def scope_kick(obj, event, x, y):
+    scope.tick()
+
+def scope_paint(obj, event, x, y):
+    scope.screen.refresh(true)
+
+counter = 0
+
+
+

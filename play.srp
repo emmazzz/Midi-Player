@@ -1,0 +1,223 @@
+require "sched"
+require "wxserpent"
+require "allegro"
+require "mfread"
+
+############################################################################
+# Sorting function
+############################################################################
+
+def sort_by_beat(n1,n2):
+    if (n1[0]>n2[0]):return true
+    return false
+
+############################################################################
+# Player class
+############################################################################
+class Player:
+    var track       #song
+    var next_event  #next event
+    var tempo       #second/beat
+    var cur_beat    #current beat
+    var cur_time    #current 'real' time
+    var stop_time   #time we stop (real)
+    var resume_time #time we resume (real)
+    var next_time   #'real' time of next event
+    var next_beat   #beat of next event
+    var play        #play or not
+    var active_notes#notes that need to be turned off
+    var change_time #the 'real' time we change tempo
+    var stop_beat   #the beat at which we stop
+    var all_stop    #stop time in total
+    var last_beat   #at which beat we change tempo
+    var midi_out
+    var midi_dev
+    var finished
+    
+    def init(seq):
+        midi_out = midi_create()
+        midi_dev = midi_out_default()
+        if midi_open_output(midi_out, midi_dev, 100, 10) != 0
+            display "Error opening default MIDI device for output"
+        display "sending first MIDI message", time_get()
+        track = seq
+        track.convert_to_beats() #now time in track is in beat
+        track.iteration_begin()
+        next_event = track.iteration_next()
+        tempo = 60.0/100
+        cur_beat = 0
+        cur_time = time_get()
+        stop_time = cur_time
+        resume_time = cur_time
+        next_time = next_event.time*tempo + cur_time
+        next_beat = next_event.time       
+        play = false
+        active_notes = array(0)
+        change_time = cur_time
+        stop_beat = 0
+        all_stop = 0
+        last_beat = 0
+        finished = false
+        display "tempo",tempo,"cur_time",cur_time,"real time",time_get()
+        
+    
+    def get_cur_time():
+        # convert from real time to 'real' time
+        return time_get()-all_stop
+
+    def get_time_by_beat(beat):
+        return change_time + (beat-last_beat)*tempo 
+    
+    def get_beat_by_time(time):
+        #convert 'real' time to beat
+        return (time - change_time)/tempo + last_beat
+
+    def set_tempo(t):
+        tempo = 60.0/t 
+
+    def check_note():
+        if (play == false):return
+        if (finished):
+            midi_close(midi_out)
+            return
+        cur_beat = get_beat_by_time(get_cur_time())
+        while true:
+            if (len(active_notes) != 0):
+                # display "if"
+                var first = active_notes[0]
+                if (first[0] <= cur_beat):
+                    # display "note off!",first.beat
+                    send_note(first[0],0,0,first[2])
+                    active_notes = subseq(active_notes,1)
+                else:
+                    check_event()
+                    return
+            else:
+                # display "else"
+                check_event()
+                return
+
+    def check_event():
+        
+        while true:
+            cur_time = get_cur_time()
+            if (cur_time < get_time_by_beat(next_beat)):return
+            doit()
+            next_event = track.iteration_next()
+            if (next_event == nil):
+                finished = true
+                return
+            next_beat = next_event.time
+
+    def send_note(beat,pitch,velo,chan):
+        cur_time = get_cur_time()
+        var message = chr(144+int(chan)) + chr(pitch) + chr(int(velo))
+        var now = int(time_get()*1000)
+        midi_write(midi_out, now, message)
+        # display "tempo",tempo,"beat",beat,"current time",cur_time,"real time",time_get()
+        return
+
+    def add_note(beat,pitch,chan):
+        var n = [beat,pitch,chan]
+        active_notes.append(n)
+        active_notes.sort('sort_by_beat')
+        return
+
+    def send_control(val,chan):
+        var message = chr(176+int(chan))+chr(0)+chr(int(val))
+        var now = int(time_get()*1000)
+        midi_write(midi_out, now, message)
+        return
+
+    def send_program(val,chan):
+        var message = chr(192+int(chan)) + chr(int(val))
+        var now = int(time_get()*1000)
+        midi_write(midi_out, now, message)
+        return
+
+    def doit():
+        var etype = next_event.get_type_code()
+        if (etype == ALG_NOTE):
+            var beat = next_event.time
+            var dur = next_event.dur
+            var pitch = next_event.pitch
+            var velo = next_event.loud
+            var chan = next_event.chan
+            send_note(beat,pitch,velo,chan)
+            add_note(beat+dur,pitch,chan)
+        elif (etype == ALG_CONTROL):
+            send_control(next_event.value,next_event.chan)
+            return
+        elif (etype == ALG_PROGRAM):
+            send_program(next_event.value,next_event.chan)
+            return
+        else: return 
+
+
+############################################################################
+# Initialization
+############################################################################
+
+reader = Midifile_reader(command_line_arguments[1])
+player = Player(reader.seq)
+
+if (player.finished == false): wxs_timer_start(2, 'check')
+
+############################################################################
+# Tempo Slider
+############################################################################
+
+tempo_slider = Slider(WXS_DEFAULT_WINDOW, 50, 150, 100,
+                           125, 190, 20, 100, nil)
+
+tempo_slider.method = 'slider_clicked'
+
+statictext = Statictext(WXS_DEFAULT_WINDOW, "Adjust tempo here",
+                           80, 155, 110, 20)
+
+def check():
+    player.check_note()
+
+def slider_clicked(obj,event,x,y):
+    # display "hit tempo",event,x
+    t = 200-x
+    player.set_tempo(t)
+    player.change_time = player.cur_time
+    player.last_beat = player.cur_beat
+
+############################################################################
+# Play Button
+############################################################################
+
+play_button = Button(WXS_DEFAULT_WINDOW, "Play", 
+                   10, 10, 90, 25)
+play_button.method = 'play_hit'
+
+def play_hit(obj, event, x, y):
+
+    if (player.play == true):return
+
+    player.play = true
+    player.resume_time = time_get()
+    player.all_stop = player.all_stop + (player.resume_time-player.stop_time)
+    # display "play","resume",player.resume_time,"allstop",player.all_stop
+
+
+############################################################################
+# Stop Button
+############################################################################
+
+stop_button = Button(WXS_DEFAULT_WINDOW, "Stop", 
+                   10, 40, 90, 25)
+stop_button.method = 'stop_hit'
+
+def stop_hit(obj, event, x, y):
+    if (player.play == false):return
+    player.play = false
+    player.stop_time = time_get()
+    player.stop_beat = player.cur_beat
+    # display "stop","time",player.stop_time,"beat",player.stop_beat
+
+
+
+

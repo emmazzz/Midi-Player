@@ -1,0 +1,18 @@
+print "loading serpent/lib/init.srp ..."
+require "debug"
+#load "C:\\rbd\\rbd\\bandwidth\\decode\\decode.srp"
+
+
+#load "init_interface"
+
+#load "programs\\init_allegro"
+#load "programs\\init_midiout"
+#load "programs\\init_s2m"
+#load "programs\\benchmark"
+#print "benchmark.srp loaded"
+#load "programs\\sorttest"
+
+#load "..\\accompaniment\\readcr"
+
+#load "*.*"
+

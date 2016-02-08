@@ -1,0 +1,339 @@
+# json.srp -> JSON parsing and stringifying library by Andrew Russell
+# Usage:
+# Parsing:
+# { "value": <dictionary>, "error": <string> } = json_parse(<json_string>)
+# { "value": <dictionary>, "error": <string> } = json_parse_file(<filename>)
+#
+# Stringifiying:
+# <string> = json_stringify(<json_value> [, <boolean - pretty print> ])
+# json_write_file(<json_value>, <filename> [, <boolean - pretty print> ])
+# If there is no error, "error" is 'nil'.
+# If there is an error, "value" is 'nil'.
+#
+# Dependencies:
+# string.srp -> String library by Andrew Russell
+#
+# Issues:
+# - Since Serpent treats 'false' and 'null' as the same, this parse cannot currently
+# tell the difference between 'false' and 'null' values in the JSON.
+# - This may crash on really large files since it reads the entire file before parsing.
+# - Number parsing is not as strict as it should be.
+#
+# Todo:
+# - Support class objects through object serialization.
+# - Support streaming through file handles
+#
+
+require "string"
+
+def json_parse(json_string):
+  var obj = json_parse_value(json_string, 0)
+  error = nil
+  if obj.get("error")
+    error = obj.get("error") + " at " + str(obj["index"])
+  return { "value": obj.get("value"), "error": error }
+
+def json_parse_file(json_filename):
+  var file = open(json_filename, "r")
+  var json_string = string_join(file.readlines(), "")
+  return json_parse(json_string)
+
+def json_stringify(json_value, optional pretty = false):
+  return json_stringify_value(json_value, 0, pretty)
+
+def json_write_file(json_value, json_filename, optional pretty = false):
+  var json_string = json_stringify(json_value, pretty)
+  var file = open(json_filename, "w")
+  file.write(json_string)
+  file.close()
+
+JSON_TOKEN_NONE = -1
+JSON_TOKEN_STRING = 0
+JSON_TOKEN_NUMBER = 1
+JSON_TOKEN_CURLY_OPEN = 2
+JSON_TOKEN_CURLY_CLOSE = 3
+JSON_TOKEN_SQUARE_OPEN = 4
+JSON_TOKEN_SQUARE_CLOSE = 5
+JSON_TOKEN_COMMA = 6
+JSON_TOKEN_COLON = 7
+JSON_TOKEN_TRUE = 8
+JSON_TOKEN_FALSE = 9
+JSON_TOKEN_NULL = 10
+
+def json_get_last_index_of_number(json_string, index):
+  var last_index = index
+  while last_index < len(json_string):
+    var c = json_string[last_index]
+    if not isdigit(c) and c != "+" and c != "-" and c != "." and c != "e" and c != "E":
+      return last_index
+    last_index = last_index + 1
+  return last_index
+
+def json_skip_whitespace(json_string, index):
+  while isspace(json_string[index]):
+    index = index + 1
+  return index
+
+def json_get_next_token(json_string, index):
+  index = json_skip_whitespace(json_string, index)
+
+  var token = JSON_TOKEN_NONE
+
+  if index < len(json_string):
+    var c = json_string[index]
+    index = index + 1
+
+    if c == "{":
+      token = JSON_TOKEN_CURLY_OPEN
+    elif c == "}":
+      token = JSON_TOKEN_CURLY_CLOSE
+    elif c == "[":
+      token = JSON_TOKEN_SQUARE_OPEN
+    elif c == "]":
+      token = JSON_TOKEN_SQUARE_CLOSE
+    elif c == ",":
+      token = JSON_TOKEN_COMMA
+    elif c == "\"":
+      token = JSON_TOKEN_STRING
+    elif isdigit(c) or c == "-":
+      token = JSON_TOKEN_NUMBER
+    elif c == ":":
+      token = JSON_TOKEN_COLON
+    else:
+      var length_left = len(json_string) - index
+      if length_left >= 4 and subseq(json_string, index - 1, index + 4) == "false":
+        token = JSON_TOKEN_FALSE
+        index = index + 4
+      elif length_left >= 3:
+        var sub = subseq(json_string, index - 1, index + 3)
+        index = index + 3
+        if sub == "true":
+          token = JSON_TOKEN_TRUE
+        elif sub == "null":
+          token = JSON_TOKEN_NULL
+
+  return { "token": token, "index": index }
+
+def json_get_next_token_index(json_string, index):
+  return json_get_next_token(json_string, index)["index"]
+
+def json_get_next_token_type(json_string, index):
+  return json_get_next_token(json_string, index)["token"]
+
+def json_parse_string(json_string, index):
+  index = json_skip_whitespace(json_string, index)
+  index = json_get_next_token_index(json_string, index)
+
+  var str = ""
+
+  var complete = false
+  while not complete:
+    if index == len(json_string):
+      return { "index": index, "error": "unfinished string" }
+
+    c = json_string[index]
+    index = index + 1
+    if c == "\"":
+      complete = true
+    elif c == "\\":
+      if index == len(json_string):
+        return { "index": index, "error": "unfinished escape sequence" }
+
+      c = json_string[index]
+      index = index + 1
+      if c == "\"":
+        str = str + "\""
+      elif c == "\\":
+        str = str + "\\"
+      elif c == "/":
+        str = str + "/"
+      elif c == "b":
+        str = str + "\b"
+      elif c == "f":
+        str = str + "\f"
+      elif c == "n":
+        str = str + "\n"
+      elif c == "r":
+        str = str + "\r"
+      elif c == "t":
+        str = str + "\t"
+      elif c == "u":
+        var length_left = len(json_string) - index
+        if length_left >= 4:
+          var code_point = string_hex_to_int(subseq(json_string, index, index + 4))
+          str = str + chr(code_point)
+          index = index + 4
+        else:
+          return { "index": index, "error": "unfinished code point" }
+    else:
+      str = str + c
+
+  return { "value": str, "index": index }
+
+def json_parse_number(json_string, index)
+  index = json_skip_whitespace(json_string, index)
+  last_index = json_get_last_index_of_number(json_string, index)
+  var number = real(subseq(json_string, index, last_index))
+  return { "value": number, "index": last_index }
+
+def json_parse_object(json_string, index):
+  var dict = {}
+  
+  index = json_get_next_token_index(json_string, index)
+  var complete = false
+  var last_token_value = false
+  while not complete:
+    var token = json_get_next_token_type(json_string, index)
+    if token == JSON_TOKEN_NONE:
+      return { "index": index, "error": "unifinished object" }
+    elif token == JSON_TOKEN_COMMA:
+      if not last_token_value:
+        return { "index": index, "error": "missing key:value in object" }
+      index = json_get_next_token_index(json_string, index)
+      last_token_value = false
+    elif token == JSON_TOKEN_CURLY_CLOSE:
+      index = json_get_next_token_index(json_string, index)
+      complete = true
+    else:
+      if last_token_value:
+        return { "index": index, "error": "missing comma in object" }
+      last_token_value = true
+
+      var obj = json_parse_string(json_string, index)
+      var name = obj.get("value")
+      index = obj["index"]
+
+      if obj.get("error") != nil:
+        return obj
+      
+      obj = json_get_next_token(json_string, index)
+      token = obj["token"]
+      index = obj["index"]
+
+      if token != JSON_TOKEN_COLON:
+        return { "index": index, "error": "missing colon before value" }
+
+      obj = json_parse_value(json_string, index)
+      var value = obj.get("value")
+      index = obj["index"]
+
+      if obj.get("error") != nil:
+        return obj
+
+      dict[name] = value
+
+  return { "value": dict, "index": index }
+
+def json_parse_array(json_string, index):
+  var array = []
+
+  index = json_get_next_token_index(json_string, index)
+
+  var complete = false
+  var last_token_value = false
+  while not complete:
+    var token = json_get_next_token_type(json_string, index)
+    if token == JSON_TOKEN_NONE:
+      return { "index": index, "error": "unfinished array" }
+    elif token == JSON_TOKEN_COMMA:
+      if not last_token_value:
+        return { "index": index, "error": "missing value in array" }
+      index = json_get_next_token_index(json_string, index)
+      last_token_value = false
+    elif token == JSON_TOKEN_SQUARE_CLOSE:
+      index = json_get_next_token_index(json_string, index)
+      complete = true
+    else:
+      if last_token_value:
+        return { "index": index, "error": "missing comma in array" }
+      last_token_value = true
+
+      var obj = json_parse_value(json_string, index)
+      var value = obj.get("value")
+      index = obj["index"]
+
+      if obj.get("error") != nil:
+        return obj
+
+      array.append(value)
+  return { "value": array, "index": index }
+
+def json_parse_value(json_string, index):
+  var token_type = json_get_next_token_type(json_string, index)
+  if token_type == JSON_TOKEN_STRING:
+    return json_parse_string(json_string, index)
+  if token_type == JSON_TOKEN_NUMBER:
+    return json_parse_number(json_string, index)
+  if token_type == JSON_TOKEN_CURLY_OPEN:
+    return json_parse_object(json_string, index)
+  if token_type == JSON_TOKEN_SQUARE_OPEN:
+    return json_parse_array(json_string, index)
+  if token_type == JSON_TOKEN_TRUE:
+    return { "value": true, "index": json_get_next_token_index(json_string, index) }
+  if token_type == JSON_TOKEN_FALSE:
+    return { "value": false, "index": json_get_next_token_index(json_string, index) }
+  if token_type == JSON_TOKEN_NULL:
+    return { "value": nil, "index": json_get_next_token_index(json_string, index) }
+  return { "index": index, "error": "no value found" }
+
+def json_stringify_value(json_value, indent, pretty):
+  if isstring(json_value) or issymbol(json_value):
+    # TODO: Should we really convert symbols to strings?
+    return json_stringify_simple("\"" + str(json_value) + "\"", indent, pretty)
+  if isnumber(json_value):
+    return json_stringify_simple(json_value, indent, pretty)
+  if type(json_value) == 'Dict':
+    return json_stringify_object(json_value, indent, pretty)
+  if isarray(json_value):
+    return json_stringify_array(json_value, indent, pretty)
+  if isnull(json_value):
+    return json_stringify_simple("null", indent, pretty)
+  if isatom(json_value) and json_value:
+    return json_stringify_simple("true", indent, pretty)
+  # TODO: Should I return an error here instead?
+  return json_stringify_simple("\"[Object " + str(type(json_value)) + "]\"", indent, pretty)
+
+def json_stringify_simple(json_value, indent, pretty):
+  return str(json_value)
+
+def json_stringify_object(json_object, indent, pretty):
+  var value = "{"
+
+  indent = indent + 1
+  var keys = json_object.keys()
+  for key at i in keys:
+    if pretty:
+      value = value + "\n" + json_stringify_get_indent(indent, pretty)
+    value = value + "\"" + key + "\":"
+    if pretty:
+      value = value + " "
+    value = value + json_stringify_value(json_object[key], indent, pretty)
+    if i < len(keys) - 1:
+      value = value + ","
+  if pretty:
+    value = value + "\n"
+  indent = indent - 1
+  return value + json_stringify_get_indent(indent, pretty) + "}"
+
+def json_stringify_array(json_array, indent, pretty):
+  var value = "["
+
+  indent = indent + 1
+  for element at i in json_array:
+    if pretty:
+      value = value + "\n" + json_stringify_get_indent(indent, pretty)
+    value = value + json_stringify_value(element, indent, pretty)
+    if i < len(json_array) - 1:
+      value = value + ","
+  if pretty:
+    value = value + "\n"
+  indent = indent - 1
+  return value + json_stringify_get_indent(indent, pretty) + "]"
+
+def json_stringify_get_indent(indent, pretty)
+  if pretty:
+    var value = ""
+    for i = 0 to indent:
+      value = value + " "
+    return value
+  return ""

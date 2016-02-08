@@ -1,0 +1,43 @@
+// evaluate.srp -- expression evaluation box
+
+// This control evaluates text input by compiling and executing it
+
+class Evaluate (Panel):
+    var text
+    var button
+    var statictext
+
+    def init(parent, x, y, w, h, optional label, 
+             optional color = "GREY"):
+        var EVAL_WIDTH = 50
+        var LAB_HT = 25 // label height
+        # create box for expression and "Eval" button. Optional label
+        # goes to the right of the button.
+        if w < 100
+            w = 100
+        if h < 50
+            h = 100
+        super.init(parent, x, y, w, h)
+        text = Multitext(id, 0, 0, w, h - LAB_HT)
+        // note: width of 50 is too narrow for Mac version
+        button = Button(id, "Eval", 0, h - LAB_HT, EVAL_WIDTH, LAB_HT)
+        button.method = 'eval_button_hit'
+        button.target = this
+        // evidently, gtk button inherit color from parent, so don't set
+        // parent color to grey until after creating the button...
+        set_color(color)
+        if label: // 4 is just a spacer for better layout
+            statictext = Statictext(id, label, EVAL_WIDTH + 4, h - LAB_HT + 4, 
+                                                w - 36, LAB_HT)
+
+    def eval_button_hit(obj, event, x, y):
+        // may need to append newline to text.value()
+        var s = text.value()
+        if len(s) == 0 or s.last() != "\n":
+            s = s + "\n"
+        print "eval:", s;
+        do_eval(s)      // this allows custom override of eval
+        print previous_value
+
+    def do_eval(s)
+        eval(s)

@@ -1,0 +1,217 @@
+require "allegro"
+class Midifile_reader:
+    var reader
+    var divisions
+    var seq
+    var on_notes
+    var track
+    var error
+
+    def init(file):
+        var closefile
+        if type(file) == 'String'
+            file = open(file, "rb")
+            closefile = t
+        divisions = 24
+        on_notes = {}
+        seq = Alg_seq()
+        seq.tracks.set_len(0) // remove default empty track zero
+        track_num = 0
+        reader = smfr_create()
+        error = smfr_initialize(reader, this, file)
+        if closefile
+            file.close()
+
+    def set_nomerge(flag):
+        smfr_set_nomerge(reader, flag)
+
+    def set_skipinit(flag):
+        smfr_set_skipinit(reader, flag)
+
+    def get_time():
+        var beat = smfr_get_currtime(reader)
+        //if beat > 0:
+          //print "get_time: beat "; beat; " quarters ";
+        beat = beat / divisions // convert to quarters
+        var s = seq.map.beat_to_time(beat)
+        //if beat > 0:
+           //print beat; " seconds "; s
+        //if random() < 0.01:
+        //display "get_time", beat*divisions, divisions, beat, s
+        //seq.map.show()
+        return s
+
+    def starttrack():
+        //print "starting new track"
+        track = []
+
+    def endtrack():
+        seq.tracks.append(track)
+        //print "endtrack: "; seq.tracks
+        //print "finished track, length "; len(track); " number "; track_num / 100
+        track = nil
+
+    def eot():
+        nil
+
+    def header(format, ntrks, division):
+        if format > 1:
+            warning("Midi file format " + repr(format) +
+                    " not expected.")
+        divisions = division
+        //print "header", format, ntrks, division
+
+    def note_on(chan, key, vel):
+        //print "mfread note_on", chan, key, vel
+        if vel == 0:  // indicates really a note off
+            note_off(chan, key, vel)
+            return
+        var note = Alg_note()
+        note.time = get_time()
+        // time is in seconds
+        // print "time is "; note.time; " beats is "; seq.map.time_to_beat(note.time);
+        // print " units_are_seconds "; seq.units_are_seconds
+        note.chan = chan
+        note.dur = 0
+        note.key = key
+        note.pitch = key
+        note.loud = vel
+        track.append(note)
+        key = [chan, key] // now "key" means search key
+        var current = on_notes.get(key)
+        if current: // the same note is already on
+            if type(current) == 'Array': // append to existing notes
+                on_notes[key].append(note)
+            else: // put existing note and new note in array
+                on_notes[key] = [current, note]
+                //print "2nd note on:"
+                //current.show()
+                //note.show()
+        else: // typical case: no existing matching notes
+            on_notes[key] = note
+
+
+    def note_off(chan, key, vel):
+        var time = get_time()
+        key = [chan, key]
+        var current = on_notes.get(key)
+        if not current: // nothing to turn off
+            return
+        // multiple note-ons: turn them all off
+        if type(current) == 'Array':
+            for e in current:
+                e.dur = time - e.time
+                if e.dur < 0:
+                    display "mfread::note_off NEGATIVE DURATION", e.dur
+        else: // typical case: one note on, turn it off
+            current.dur = time - current.time
+        on_notes.remove(key) // notes are no longer awaiting note-offs
+
+
+    def update(chan, key, attribute, value):
+        var update = Alg_update()
+        update.time = get_time()
+        update.chan = chan
+        if (chan != -1)
+            update.chan = chan
+        update.key = key
+        update.attribute = attribute
+        update.value = value
+        track.append(update)
+
+
+    def pressure(chan, key, val):
+        update(chan, key, 'pressurer', val/127)
+
+    def control(chan, control, val):
+        update(chan, -1, intern("control" + repr(control) + "r"), val / 127)
+
+    def pitchbend(chan, amount):
+        update(chan, -1, 'bendr', (amount / 8192) - 1)
+
+    def program(chan, prg):
+        update(chan, -1, 'programi', prg)
+
+    def channel_pressure(chan, amt):
+        update(chan, -1, 'pressurer', amt / 127)
+ 
+    def sysex(msg):
+        warning("Midi file sysex ignored")
+
+    def arbitrary(msg):
+        warning("Midi file arbitrary data ignored")
+
+    def metamisc(n, msg):
+        warning("Midi file metamisc data ignored")
+
+    def seqnum(n):
+        warning("Midi file seqnum ignored")
+
+
+    def smpte(i1, i2, i3, i4, i5):
+        warning("Midi file smpte data ignored")
+
+
+    def time_signature(i1, i2, i3, i4):
+        // print "time signature data ignored:", i1, i2, i3, i4
+        seq.set_time_sig(smfr_get_currtime(reader) / divisions, 
+                         i1, 1 << i2)
+
+
+    def tempo(n):
+        //print "tempo:", n,
+        var beat = smfr_get_currtime(reader)
+        beat = beat / divisions // convert to quarters
+        // 6000000 us/min / n us/beat => beat / min
+        var tempo = 60000000.0 / n
+        //print "inserting tempo", tempo, "beat", beat
+        seq.insert_tempo(tempo, beat)
+
+    def key_signature(key, mode):
+        update(-1, -1, 'keysigi', key)
+        if mode == 0:
+            mode = 'majora'
+        else:
+            mode = 'minora'
+        update(-1, -1, 'modea', mode)
+ 
+
+    def sq_specific(msg):
+        warning("Midi file sq specific data ignored")
+
+    def text(msg_type, msg):
+        var attr
+        if msg_type == 1:
+            attr = 'texts'
+        elif msg_type == 2:
+            attr = 'copyrights'
+        elif msg_type == 3:
+            attr = 'names'
+        elif msg_type == 4:
+            attr = 'instruments'
+        elif msg_type == 5:
+            attr = 'lyrics'
+        elif msg_type == 6:
+            attr = 'markers'
+        elif msg_type == 7:
+            attr = 'cues'
+        else:
+            attr = 'miscs'
+        update(-1, -1, attr, msg)
+
+
+def allegro_smf_read(file):
+    var reader = Midifile_reader(file)
+    return reader.seq
+
+# track = allegro_smf_read(command_line_arguments[1])
+# display type(track)
+# track.iteration_begin()
+# while true:
+#     next = track.iteration_next()
+#     if (next == nil):return
+#     else:
+#         next.show()
+#         display next.get_type_code()
+
+

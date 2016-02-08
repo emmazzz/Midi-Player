@@ -1,0 +1,32 @@
+// runnable.srp -- a class for encapsulating a function or method
+//
+// Roger B. Dannenberg
+// Jan 2015
+
+// Runnable(target, message, parms) - create an object ready to execute
+//     target.message(parms). If target is nil, execute message(parms),
+//     treating message as a global function.
+// The run() method is called to execute the method or function. If one
+//     or more parameters are given to run(), they override the parameters
+//     (if any) provided in init(). This allows a single Runnable to be 
+//     called multiple times with different parameters.
+
+NO_PARMS = []
+
+class Runnable:
+    var target  // the object to receive message (nil for function call)
+    var message // the function or method called by run() (a 'symbol')
+    var parms   // parameters to pass to the function or method
+
+    def init(target_, message_, optional parms_ = NO_PARMS):
+        target = target_
+        message = message_
+        parms = parms_
+
+    def run(rest parms_):
+        if len(parms_) > 0:
+            parms = parms_
+        if target:
+            sendapply(target, message, parms)
+        else:
+            apply(message, parms)
